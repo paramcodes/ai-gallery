@@ -6,6 +6,7 @@ import { Upload, X, ChevronLeft, ChevronRight, Image as ImageIcon, Trash2, Exter
 interface ImageItem {
   id: string;
   url: string;
+  publicId: string;
   filename: string;
   timestamp: number;
 }
@@ -16,10 +17,45 @@ interface Toast {
   type: 'success' | 'error' | 'info';
 }
 
+interface CloudinaryListResponse {
+  images: ImageItem[];
+  error?: string;
+}
+
+interface UploadResponse {
+  url: string;
+  publicId: string;
+}
+
 // Cloudinary config from environment variables
 const CLOUDINARY_CLOUD_NAME = import.meta.env.VITE_CLOUDINARY_CLOUD_NAME || 'do1l4ta4k';
 const CLOUDINARY_UPLOAD_PRESET = import.meta.env.VITE_CLOUDINARY_UPLOAD_PRESET || 'wagmi_unsigned';
 const CLOUDINARY_FOLDER = import.meta.env.VITE_CLOUDINARY_FOLDER || 'wagmi-gallery';
+const CLOUDINARY_API_BASE_URL = import.meta.env.VITE_CLOUDINARY_API_BASE_URL || '';
+
+function getFunctionUrl(path: string): string {
+  if (!CLOUDINARY_API_BASE_URL) {
+    return path;
+  }
+  return `${CLOUDINARY_API_BASE_URL.replace(/\/$/, '')}${path}`;
+}
+
+async function parseJsonResponse<T>(response: Response, endpoint: string): Promise<T> {
+  const contentType = response.headers.get('content-type') || '';
+  const raw = await response.text();
+
+  if (!contentType.includes('application/json')) {
+    throw new Error(
+      `Expected JSON from ${endpoint}, got ${contentType || 'unknown'} (status ${response.status}). Use netlify dev locally or set VITE_CLOUDINARY_API_BASE_URL.`
+    );
+  }
+
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    throw new Error(`Invalid JSON from ${endpoint} (status ${response.status})`);
+  }
+}
 
 // Toast Component with Framer Motion
 function ToastNotification({ toast, onClose }: { toast: Toast; onClose: () => void }) {
@@ -150,7 +186,7 @@ function GlowingLogo({ size = 'normal' }: { size?: 'small' | 'normal' | 'large' 
 function ImageCard({ image, onClick, onDelete, index }: {
   image: ImageItem;
   onClick: () => void;
-  onDelete: () => void;
+  onDelete: () => Promise<void>;
   index: number;
 }) {
   const [loaded, setLoaded] = useState(false);
@@ -363,11 +399,17 @@ function Lightbox({
 }
 
 // Upload function using Cloudinary unsigned upload
-async function uploadToCloudinary(file: File): Promise<string> {
+async function uploadToCloudinary(file: File): Promise<UploadResponse> {
   const formData = new FormData();
   formData.append('file', file);
   formData.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
   formData.append('folder', CLOUDINARY_FOLDER);
+
+  console.log('Uploading to Cloudinary:', {
+    cloudName: CLOUDINARY_CLOUD_NAME,
+    uploadPreset: CLOUDINARY_UPLOAD_PRESET,
+    folder: CLOUDINARY_FOLDER,
+  });
 
   try {
     const response = await fetch(
@@ -378,16 +420,50 @@ async function uploadToCloudinary(file: File): Promise<string> {
       }
     );
 
-    if (!response.ok) throw new Error('Upload failed');
     const data = await response.json();
-    return data.secure_url;
-  } catch {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result as string);
-      reader.onerror = reject;
-      reader.readAsDataURL(file);
-    });
+
+    if (!response.ok) {
+      console.error('Cloudinary error:', data);
+      throw new Error(data.error?.message || 'Upload failed');
+    }
+
+    console.log('Upload successful:', data.secure_url);
+    return {
+      url: data.secure_url,
+      publicId: data.public_id,
+    };
+  } catch (error) {
+    console.error('Upload error:', error);
+    throw error;
+  }
+}
+
+async function fetchCloudinaryImages(): Promise<ImageItem[]> {
+  const endpoint = getFunctionUrl('/.netlify/functions/cloudinary-images');
+  const response = await fetch(endpoint);
+  const data = await parseJsonResponse<CloudinaryListResponse>(response, endpoint);
+
+  if (!response.ok) {
+    throw new Error(data.error || 'Failed to fetch images from Cloudinary');
+  }
+
+  return data.images;
+}
+
+async function deleteCloudinaryImage(publicId: string): Promise<void> {
+  const endpoint = getFunctionUrl('/.netlify/functions/cloudinary-delete');
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ publicId }),
+  });
+
+  const data = await parseJsonResponse<{ error?: string }>(response, endpoint);
+
+  if (!response.ok) {
+    throw new Error(data.error || 'Failed to delete image');
   }
 }
 
@@ -399,16 +475,31 @@ export default function App() {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Load from localStorage
+  const refreshImagesFromCloudinary = async () => {
+    const cloudinaryImages = await fetchCloudinaryImages();
+    setImages(cloudinaryImages);
+    localStorage.setItem('wagmi-gallery', JSON.stringify(cloudinaryImages));
+  };
+
+  // Load from Cloudinary (shared), fallback to localStorage if function/env is not configured
   useEffect(() => {
-    const stored = localStorage.getItem('wagmi-gallery');
-    if (stored) {
+    const loadImages = async () => {
       try {
-        setImages(JSON.parse(stored));
-      } catch {
-        console.error('Failed to parse stored images');
+        await refreshImagesFromCloudinary();
+      } catch (error) {
+        console.warn('Cloudinary list API unavailable, using localStorage fallback:', error);
+        const stored = localStorage.getItem('wagmi-gallery');
+        if (stored) {
+          try {
+            setImages(JSON.parse(stored));
+          } catch {
+            console.error('Failed to parse stored images');
+          }
+        }
       }
-    }
+    };
+
+    loadImages();
   }, []);
 
   // Save to localStorage
@@ -429,6 +520,7 @@ export default function App() {
 
   const handleUpload = async (files: FileList) => {
     setIsUploading(true);
+    let uploadedAny = false;
 
     for (const file of Array.from(files)) {
       if (!file.type.startsWith('image/')) {
@@ -437,13 +529,15 @@ export default function App() {
       }
 
       try {
-        const url = await uploadToCloudinary(file);
+        const uploadResult = await uploadToCloudinary(file);
         const newImage: ImageItem = {
-          id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
-          url,
+          id: uploadResult.publicId,
+          url: uploadResult.url,
+          publicId: uploadResult.publicId,
           filename: file.name,
           timestamp: Date.now(),
         };
+        uploadedAny = true;
         setImages(prev => [newImage, ...prev]);
         addToast(`${file.name} uploaded`, 'success');
       } catch (error) {
@@ -451,12 +545,32 @@ export default function App() {
       }
     }
 
+    if (uploadedAny) {
+      try {
+        await refreshImagesFromCloudinary();
+      } catch (error) {
+        console.warn('Cloudinary sync after upload failed:', error);
+      }
+    }
+
     setIsUploading(false);
   };
 
-  const handleDelete = (id: string) => {
-    setImages(prev => prev.filter(img => img.id !== id));
-    addToast('Image deleted', 'info');
+  const handleDelete = async (image: ImageItem) => {
+    if (!image.publicId) {
+      setImages(prev => prev.filter(img => img.id !== image.id));
+      addToast('Image deleted locally', 'info');
+      return;
+    }
+
+    try {
+      await deleteCloudinaryImage(image.publicId);
+      await refreshImagesFromCloudinary();
+      addToast('Image deleted', 'info');
+    } catch (error) {
+      console.error('Delete error:', error);
+      addToast('Failed to delete image', 'error');
+    }
   };
 
   return (
@@ -589,7 +703,7 @@ export default function App() {
                 key={image.id}
                 image={image}
                 onClick={() => setSelectedIndex(index)}
-                onDelete={() => handleDelete(image.id)}
+                onDelete={() => handleDelete(image)}
                 index={index}
               />
             ))}

@@ -114,3 +114,28 @@
 8. ✅ Responsive design works on mobile/tablet/desktop
 9. ✅ Nice hover effects on image cards
 10. ✅ Toast notifications for user feedback
+
+## 8. Cloudinary Cross-Device Sync
+
+Uploads were already going to Cloudinary, but gallery listing is now fetched from a Netlify Function so all devices see the same images.
+
+### Required Environment Variables
+
+- `VITE_CLOUDINARY_CLOUD_NAME`
+- `VITE_CLOUDINARY_UPLOAD_PRESET`
+- `VITE_CLOUDINARY_FOLDER`
+- `CLOUDINARY_API_KEY`
+- `CLOUDINARY_API_SECRET`
+- `CLOUDINARY_FOLDER` (optional override, defaults to `wagmi-gallery`)
+
+### How It Works
+
+- Frontend upload still uses unsigned upload preset.
+- Frontend reads gallery data from `/.netlify/functions/cloudinary-images`.
+- Frontend delete calls `/.netlify/functions/cloudinary-delete`.
+- Function calls Cloudinary Admin API with API key + secret and returns folder images.
+
+### Local Development Note
+
+- If you run only `vite`, `/.netlify/functions/*` may return HTML, not JSON.
+- Run with Netlify Functions (`netlify dev`) or set `VITE_CLOUDINARY_API_BASE_URL` to a deployed site URL.

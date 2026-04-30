@@ -1,12 +1,2 @@
-[build]
-command = "pnpm install --prefer-offline && pnpm run build"
-functions = "netlify/functions"
-publish = "dist"
-
-[build.environment]
-NODE_VERSION = "20"
-
-[[redirects]]
-from = "/*"
-to = "/index.html"
-status = 200
+[functions]
+	directory = "netlify/functions"
