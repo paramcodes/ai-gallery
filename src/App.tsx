@@ -16,10 +16,10 @@ interface Toast {
   type: 'success' | 'error' | 'info';
 }
 
-// Cloudinary config
-const CLOUDINARY_CLOUD_NAME = 'wagmi-gallery';
-const CLOUDINARY_API_KEY = '523729293991879';
-const CLOUDINARY_API_SECRET = '91Qro0AYtNwfiI9P9hHhdcUVpx8';
+// Cloudinary config from environment variables
+const CLOUDINARY_CLOUD_NAME = import.meta.env.VITE_CLOUDINARY_CLOUD_NAME || 'do1l4ta4k';
+const CLOUDINARY_UPLOAD_PRESET = import.meta.env.VITE_CLOUDINARY_UPLOAD_PRESET || 'wagmi_unsigned';
+const CLOUDINARY_FOLDER = import.meta.env.VITE_CLOUDINARY_FOLDER || 'wagmi-gallery';
 
 // Toast Component with Framer Motion
 function ToastNotification({ toast, onClose }: { toast: Toast; onClose: () => void }) {
@@ -366,8 +366,8 @@ function Lightbox({
 async function uploadToCloudinary(file: File): Promise<string> {
   const formData = new FormData();
   formData.append('file', file);
-  formData.append('upload_preset', 'wagmi_unsigned');
-  formData.append('folder', 'wagmi-gallery');
+  formData.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
+  formData.append('folder', CLOUDINARY_FOLDER);
 
   try {
     const response = await fetch(
